@@ -15,11 +15,13 @@ BACKGROUND_COLOR = (135, 206, 235)
 PLAYER_COLOR = (255, 100, 100)
 PLAYER_BORDER = (0, 0, 0)
 PLATFORM_COLOR = (50, 200, 50)
+BONUS_PLATFORM_COLOR = (255, 223, 0)  # Jaune
 
 # Joueur
 PLAYER_WIDTH, PLAYER_HEIGHT = 50, 60
 PLAYER_SPEED = 4
 JUMP_POWER = -12
+SUPER_JUMP_POWER = -20  # Super saut pour les plateformes bonus
 GRAVITY = 0.5
 
 # Plateformes
@@ -33,8 +35,14 @@ platforms = [
     pygame.Rect(0, HEIGHT - 10, WIDTH, 10)  # Sol
 ]
 
+# Plateformes bonus
+bonus_platforms = []
+BONUS_PLATFORM_CHANCE = 0.2  # 20% de chance de générer une plateforme bonus
+BONUS_MIN_WIDTH = 60
+BONUS_MAX_WIDTH = 100
+
 # Timer plateforme
-PLATFORM_TIME_LIMIT = 1300  # ms
+PLATFORM_TIME_LIMIT = 850  # ms
 
 # Joueur - état initial
 player_x = WIDTH // 2 - PLAYER_WIDTH // 2
@@ -97,66 +105,14 @@ while running:
         player_vel_y = 20  # Limite la vitesse de chute
     player_y += player_vel_y
 
-    # Détection de collision plateforme (par le dessous du joueur)
-    on_ground = False
-    new_platform_index = None
-    for idx, plat in enumerate(platforms):
-        if (player_y + PLAYER_HEIGHT > plat.y and
-            player_y + PLAYER_HEIGHT - player_vel_y <= plat.y and
-            player_x + PLAYER_WIDTH > plat.x and
-            player_x < plat.x + plat.width and
-            player_vel_y >= 0):
-            player_y = plat.y - PLAYER_HEIGHT
-            player_vel_y = 0
-            on_ground = True
-            new_platform_index = idx
-            break
-    sol_index = len(platforms) - 1
-
-    # Timer plateforme : seulement si on est sur une plateforme autre que le sol
-    if on_ground and new_platform_index is not None and new_platform_index != sol_index:
-        if current_platform_index == new_platform_index:
-            platform_timer += dt
-        else:
-            platform_timer = 0
-            current_platform_index = new_platform_index
-        if platform_timer > PLATFORM_TIME_LIMIT:
-            on_ground = False
-            player_y += 2  # Décale le joueur vers le bas pour sortir de la plateforme
-            player_vel_y = 1
-            platform_timer = 0
-            current_platform_index = None
-    elif on_ground and new_platform_index == sol_index:
-        platform_timer = 0
-        current_platform_index = sol_index
-    else:
-        platform_timer = 0
-        current_platform_index = None
-
-    # Saut
-    if jump_request and on_ground:
-        player_vel_y = JUMP_POWER
-        on_ground = False
-        platform_timer = 0
-        current_platform_index = None
-
-    # Limite bas de l'écran (sol)
-    if player_y + PLAYER_HEIGHT > HEIGHT - 10:
-        player_y = HEIGHT - 10 - PLAYER_HEIGHT
-        player_vel_y = 0
-        on_ground = True
-        platform_timer = 0
-        current_platform_index = sol_index
-
-    # --- Camera ---
-    if current_platform_index == sol_index:
-        camera_offset_y = 0
-    else:
-        camera_offset_y = player_y - CAMERA_TARGET_Y
-    # Limite la caméra pour que le sol reste en bas de l'écran
-    max_camera_offset = platforms[-1].y - (HEIGHT - platforms[-1].height)
-    if camera_offset_y > max_camera_offset:
-        camera_offset_y = max_camera_offset
+    # --- Difficulté évolutive selon la hauteur ---
+    progress = max(0, -int(player_y) // 1000)  # 1 tous les 1000 pixels montés
+    current_jump_power = JUMP_POWER - progress * 2
+    current_super_jump_power = SUPER_JUMP_POWER - progress * 2
+    current_min_gap_y = PLATFORM_MIN_GAP_Y + progress * 20
+    current_max_gap_y = PLATFORM_MAX_GAP_Y + progress * 30
+    if current_max_gap_y < current_min_gap_y:
+        current_max_gap_y = current_min_gap_y + 10
 
     # --- Génération dynamique de plateformes ---
     # On génère si le joueur s'approche à moins de 2 hauteurs d'écran du haut généré
@@ -208,16 +164,126 @@ while running:
                 plat_x = last_plat.x - MAX_JUMP_DISTANCE + plat_width // 2
             plat_x = max(0, min(WIDTH - plat_width, plat_x))
         
-        gap_y = random.randint(PLATFORM_MIN_GAP_Y, PLATFORM_MAX_GAP_Y)
+        gap_y = random.randint(current_min_gap_y, current_max_gap_y)
         plat_y = max_platform_y - gap_y
         platforms.insert(-1, pygame.Rect(plat_x, plat_y, plat_width, PLATFORM_HEIGHT))
         max_platform_y = plat_y
 
+        # Génération possible d'une plateforme bonus
+        if random.random() < BONUS_PLATFORM_CHANCE:
+            bonus_width = random.randint(BONUS_MIN_WIDTH, BONUS_MAX_WIDTH)
+            # Essaie de placer la plateforme bonus dans une zone libre
+            attempts = 10  # Nombre maximum de tentatives
+            while attempts > 0:
+                # Choisis une zone différente de la plateforme normale
+                bonus_zone = random.choice([i for i in range(3) if i != new_zone])
+                bonus_x = random.randint(
+                    bonus_zone * zone_width,
+                    (bonus_zone + 1) * zone_width - bonus_width
+                )
+                # Vérifie qu'il n'y a pas de collision horizontale avec d'autres plateformes
+                collision = False
+                for p in platforms:
+                    if (bonus_x < p.x + p.width and
+                        bonus_x + bonus_width > p.x and
+                        abs(plat_y - p.y) < PLATFORM_HEIGHT):
+                        collision = True
+                        break
+                if not collision:
+                    bonus_platforms.append(pygame.Rect(bonus_x, plat_y, bonus_width, PLATFORM_HEIGHT))
+                    break
+                attempts -= 1
+
+    # Détection de collision plateforme (par le dessous du joueur)
+    on_ground = False
+    new_platform_index = None
+    is_bonus_jump = False
+    
+    # Vérification des plateformes normales
+    for idx, plat in enumerate(platforms):
+        if (player_y + PLAYER_HEIGHT > plat.y and
+            player_y + PLAYER_HEIGHT - player_vel_y <= plat.y and
+            player_x + PLAYER_WIDTH > plat.x and
+            player_x < plat.x + plat.width and
+            player_vel_y >= 0):
+            player_y = plat.y - PLAYER_HEIGHT
+            player_vel_y = 0
+            on_ground = True
+            new_platform_index = idx
+            break
+    
+    # Vérification des plateformes bonus
+    if not on_ground:
+        for bonus_plat in bonus_platforms:
+            if (player_y + PLAYER_HEIGHT > bonus_plat.y and
+                player_y + PLAYER_HEIGHT - player_vel_y <= bonus_plat.y and
+                player_x + PLAYER_WIDTH > bonus_plat.x and
+                player_x < bonus_plat.x + bonus_plat.width and
+                player_vel_y >= 0):
+                player_y = bonus_plat.y - PLAYER_HEIGHT
+                player_vel_y = 0
+                on_ground = True
+                is_bonus_jump = True
+                break
+
+    sol_index = len(platforms) - 1
+
+    # Timer plateforme : seulement si on est sur une plateforme verte autre que le sol
+    if on_ground and new_platform_index is not None and new_platform_index != sol_index and not is_bonus_jump:
+        if current_platform_index == new_platform_index:
+            platform_timer += dt
+        else:
+            platform_timer = 0
+            current_platform_index = new_platform_index
+        if platform_timer > PLATFORM_TIME_LIMIT:
+            on_ground = False
+            player_y += 2  # Décale le joueur vers le bas pour sortir de la plateforme
+            player_vel_y = 1
+            platform_timer = 0
+            current_platform_index = None
+    elif on_ground and new_platform_index == sol_index:
+        platform_timer = 0
+        current_platform_index = sol_index
+    else:
+        platform_timer = 0
+        current_platform_index = None
+
+    # Saut
+    if jump_request and on_ground:
+        player_vel_y = current_super_jump_power if is_bonus_jump else current_jump_power
+        on_ground = False
+        platform_timer = 0
+        current_platform_index = None
+
+    # Limite bas de l'écran (sol)
+    if player_y + PLAYER_HEIGHT > HEIGHT - 10:
+        player_y = HEIGHT - 10 - PLAYER_HEIGHT
+        player_vel_y = 0
+        on_ground = True
+        platform_timer = 0
+        current_platform_index = len(platforms) - 1
+
+    # --- Camera ---
+    if current_platform_index == len(platforms) - 1:
+        camera_offset_y = 0
+    else:
+        camera_offset_y = player_y - CAMERA_TARGET_Y
+    # Limite la caméra pour que le sol reste en bas de l'écran
+    max_camera_offset = platforms[-1].y - (HEIGHT - platforms[-1].height)
+    if camera_offset_y > max_camera_offset:
+        camera_offset_y = max_camera_offset
+
     # Affichage
     screen.fill(BACKGROUND_COLOR)
+    # Dessine les plateformes normales
     for plat in platforms:
         pygame.draw.rect(screen, PLATFORM_COLOR, pygame.Rect(
             plat.x, plat.y - camera_offset_y, plat.width, plat.height
+        ))
+    # Dessine les plateformes bonus
+    for bonus_plat in bonus_platforms:
+        pygame.draw.rect(screen, BONUS_PLATFORM_COLOR, pygame.Rect(
+            bonus_plat.x, bonus_plat.y - camera_offset_y, bonus_plat.width, bonus_plat.height
         ))
     player_rect = pygame.Rect(player_x, player_y - camera_offset_y, PLAYER_WIDTH, PLAYER_HEIGHT)
     pygame.draw.rect(screen, PLAYER_BORDER, player_rect, 3)
