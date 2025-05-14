@@ -31,7 +31,7 @@ platforms = [
 ]
 
 # Timer plateforme
-PLATFORM_TIME_LIMIT = 1000  # ms
+PLATFORM_TIME_LIMIT = 1300  # ms
 
 # Joueur - état initial
 player_x = WIDTH // 2 - PLAYER_WIDTH // 2
@@ -40,6 +40,7 @@ player_vel_x = 0
 player_vel_y = 0
 on_ground = False
 platform_timer = 0
+current_platform_index = None  # Utiliser l'index de la plateforme
 
 clock = pygame.time.Clock()
 running = True
@@ -54,7 +55,6 @@ while running:
             if event.key in [pygame.K_SPACE, pygame.K_UP]:
                 jump_request = True
 
-    # Déplacement horizontal
     keys = pygame.key.get_pressed()
     player_vel_x = 0
     if keys[pygame.K_LEFT]:
@@ -77,36 +77,46 @@ while running:
 
     # Détection de collision plateforme (par le dessous du joueur)
     on_ground = False
-    landed_this_frame = False
-    for plat in platforms:
+    new_platform_index = None
+    for idx, plat in enumerate(platforms):
         if (player_y + PLAYER_HEIGHT > plat.y and
             player_y + PLAYER_HEIGHT - player_vel_y <= plat.y and
             player_x + PLAYER_WIDTH > plat.x and
             player_x < plat.x + plat.width and
             player_vel_y >= 0):
-            # Atterrissage sur la plateforme
             player_y = plat.y - PLAYER_HEIGHT
             player_vel_y = 0
             on_ground = True
-            landed_this_frame = True
-            break  # On ne gère qu'une plateforme à la fois
+            new_platform_index = idx
+            break
+    sol_index = len(platforms) - 1
 
-    # Timer plateforme
-    if landed_this_frame:
-        platform_timer = 0
-    if on_ground:
-        platform_timer += dt
+    # Timer plateforme : seulement si on est sur une plateforme autre que le sol
+    if on_ground and new_platform_index is not None and new_platform_index != sol_index:
+        if current_platform_index == new_platform_index:
+            platform_timer += dt
+        else:
+            platform_timer = 0
+            current_platform_index = new_platform_index
         if platform_timer > PLATFORM_TIME_LIMIT:
             on_ground = False
+            player_y += 2  # Décale le joueur vers le bas pour sortir de la plateforme
             player_vel_y = 1
+            platform_timer = 0
+            current_platform_index = None
+    elif on_ground and new_platform_index == sol_index:
+        platform_timer = 0
+        current_platform_index = sol_index
     else:
         platform_timer = 0
+        current_platform_index = None
 
     # Saut
     if jump_request and on_ground:
         player_vel_y = JUMP_POWER
         on_ground = False
         platform_timer = 0
+        current_platform_index = None
 
     # Limite bas de l'écran (sol)
     if player_y + PLAYER_HEIGHT > HEIGHT - 10:
@@ -114,6 +124,7 @@ while running:
         player_vel_y = 0
         on_ground = True
         platform_timer = 0
+        current_platform_index = sol_index
 
     # Affichage
     screen.fill(BACKGROUND_COLOR)
