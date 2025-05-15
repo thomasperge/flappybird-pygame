@@ -42,7 +42,7 @@ BONUS_MIN_WIDTH = 60
 BONUS_MAX_WIDTH = 100
 
 # Timer plateforme
-PLATFORM_TIME_LIMIT = 850  # ms
+PLATFORM_TIME_LIMIT = 1300  # Temps en millisecondes avant de tomber d'une plateforme verte
 
 # Joueur - état initial
 player_x = WIDTH // 2 - PLAYER_WIDTH // 2
@@ -61,6 +61,10 @@ CAMERA_TARGET_Y = HEIGHT // 3
 PLATFORM_MIN_WIDTH = 80  # Plus petites plateformes
 PLATFORM_MAX_WIDTH = 200
 PLATFORM_HEIGHT = 20
+MAX_JUMP_POWER = -28         # Puissance de saut max (plus négatif = plus haut)
+MAX_SUPER_JUMP_POWER = -38   # Super saut max
+MAX_PLATFORM_MIN_GAP_Y = 250 # Ecart vertical min max
+MAX_PLATFORM_MAX_GAP_Y = 350 # Ecart vertical max max
 MAX_JUMP_HEIGHT = max(150, int(-(JUMP_POWER ** 2) / (2 * GRAVITY)))  # Au moins 150 pixels de hauteur
 PLATFORM_MIN_GAP_Y = 120  # Augmente l'écart vertical minimum
 PLATFORM_MAX_GAP_Y = min(200, int(MAX_JUMP_HEIGHT * 0.9))  # Plus grand écart vertical
@@ -72,8 +76,19 @@ max_platform_y = min(plat.y for plat in platforms if plat != platforms[-1])  # p
 jump_time = -2 * JUMP_POWER / GRAVITY
 MAX_JUMP_DISTANCE = int(PLAYER_SPEED * jump_time * 0.9)  # 0.9 pour marge de sécurité
 
+# Police pour affichage score et timer
+FONT = pygame.font.SysFont('Arial', 28)
+
+# Score et timer
+score = 0
+start_ticks = pygame.time.get_ticks()
+
 clock = pygame.time.Clock()
 running = True
+highest_platform_index = 0  # Index de la plateforme la plus haute atteinte
+death_message = None
+
+dead = False  # Etat de mort
 
 while running:
     dt = clock.tick(60)
@@ -81,9 +96,36 @@ while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+        if dead:
+            continue  # Ignore les autres entrées si mort
         if event.type == pygame.KEYDOWN:
             if event.key in [pygame.K_SPACE, pygame.K_UP]:
                 jump_request = True
+
+    if dead:
+        # Affichage seulement, pas de physique ni de mouvement
+        screen.fill(BACKGROUND_COLOR)
+        for plat in platforms:
+            pygame.draw.rect(screen, PLATFORM_COLOR, pygame.Rect(
+                plat.x, plat.y - camera_offset_y, plat.width, plat.height
+            ))
+        for bonus_plat in bonus_platforms:
+            pygame.draw.rect(screen, BONUS_PLATFORM_COLOR, pygame.Rect(
+                bonus_plat.x, bonus_plat.y - camera_offset_y, bonus_plat.width, bonus_plat.height
+            ))
+        player_rect = pygame.Rect(player_x, player_y - camera_offset_y, PLAYER_WIDTH, PLAYER_HEIGHT)
+        pygame.draw.rect(screen, PLAYER_BORDER, player_rect, 3)
+        pygame.draw.rect(screen, PLAYER_COLOR, player_rect)
+        score_text = FONT.render(f"Score : {score}", True, (0, 0, 0))
+        timer_text = FONT.render(f"Temps : {elapsed_seconds}s", True, (0, 0, 0))
+        screen.blit(score_text, (10, 10))
+        screen.blit(timer_text, (10, 40))
+        # Affiche le message de mort
+        death_message = FONT.render("Vous êtes mort !", True, (200, 0, 0))
+        msg_rect = death_message.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+        screen.blit(death_message, msg_rect)
+        pygame.display.flip()
+        continue
 
     keys = pygame.key.get_pressed()
     player_vel_x = 0
@@ -111,12 +153,20 @@ while running:
     current_super_jump_power = SUPER_JUMP_POWER - progress * 2
     current_min_gap_y = PLATFORM_MIN_GAP_Y + progress * 20
     current_max_gap_y = PLATFORM_MAX_GAP_Y + progress * 30
+    # Limites sur la puissance de saut
+    current_jump_power = max(current_jump_power, MAX_JUMP_POWER)
+    current_super_jump_power = max(current_super_jump_power, MAX_SUPER_JUMP_POWER)
+    # Limites sur l'écart vertical
+    current_min_gap_y = min(current_min_gap_y, MAX_PLATFORM_MIN_GAP_Y)
+    current_max_gap_y = min(current_max_gap_y, MAX_PLATFORM_MAX_GAP_Y)
     if current_max_gap_y < current_min_gap_y:
         current_max_gap_y = current_min_gap_y + 10
 
     # --- Génération dynamique de plateformes ---
     # On génère si le joueur s'approche à moins de 2 hauteurs d'écran du haut généré
     while player_y - 2 * HEIGHT < max_platform_y:
+        if len(platforms) < 2:
+            break
         plat_width = random.randint(PLATFORM_MIN_WIDTH, PLATFORM_MAX_WIDTH)
         # Récupère la plateforme la plus haute (hors sol)
         last_plat = platforms[-2]  # -1 = sol, -2 = dernière plateforme générée
@@ -194,6 +244,20 @@ while running:
                     break
                 attempts -= 1
 
+    # Supprime les plateformes trop basses (plus de 20 en dessous de la plus haute atteinte)
+    # On garde toujours le sol (dernière plateforme)
+    min_index = max(0, highest_platform_index - 20)
+    platforms = platforms[min_index:] + [platforms[-1]] if len(platforms) > 1 else platforms
+    # Ajuste highest_platform_index après suppression
+    if highest_platform_index >= 20:
+        highest_platform_index = 20
+    else:
+        highest_platform_index = highest_platform_index
+    # Supprime aussi les plateformes bonus trop basses
+    if len(platforms) > 1:
+        min_y = platforms[0].y
+        bonus_platforms = [b for b in bonus_platforms if b.y <= min_y or b.y > min_y]
+
     # Détection de collision plateforme (par le dessous du joueur)
     on_ground = False
     new_platform_index = None
@@ -210,6 +274,9 @@ while running:
             player_vel_y = 0
             on_ground = True
             new_platform_index = idx
+            # Met à jour la plateforme la plus haute atteinte (hors sol)
+            if idx < len(platforms) - 1 and idx > highest_platform_index:
+                highest_platform_index = idx
             break
     
     # Vérification des plateformes bonus
@@ -273,6 +340,19 @@ while running:
     if camera_offset_y > max_camera_offset:
         camera_offset_y = max_camera_offset
 
+    # --- Score ---
+    # Le score est la hauteur maximale atteinte depuis le sol, divisé par 20 pour ralentir la progression
+    score = max(score, int((HEIGHT - player_y) // 20))
+    elapsed_seconds = (pygame.time.get_ticks() - start_ticks) // 1000
+
+    # --- Mort si le joueur tombe trop bas ---
+    # Si le joueur tombe sous la dernière plateforme restante (hors sol), il meurt
+    if len(platforms) > 1:
+        lowest_platform_y = platforms[0].y
+        if player_y > lowest_platform_y + 100:  # Marge de 100 pixels
+            dead = True
+            continue  # Passe directement à l'affichage de mort
+
     # Affichage
     screen.fill(BACKGROUND_COLOR)
     # Dessine les plateformes normales
@@ -288,6 +368,13 @@ while running:
     player_rect = pygame.Rect(player_x, player_y - camera_offset_y, PLAYER_WIDTH, PLAYER_HEIGHT)
     pygame.draw.rect(screen, PLAYER_BORDER, player_rect, 3)
     pygame.draw.rect(screen, PLAYER_COLOR, player_rect)
+
+    # Affichage du score et du timer
+    score_text = FONT.render(f"Score : {score}", True, (0, 0, 0))
+    timer_text = FONT.render(f"Temps : {elapsed_seconds}s", True, (0, 0, 0))
+    screen.blit(score_text, (10, 10))
+    screen.blit(timer_text, (10, 40))
+
     pygame.display.flip()
 
 pygame.quit()
